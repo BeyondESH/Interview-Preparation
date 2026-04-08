@@ -2,6 +2,281 @@
 
 # 二.项目介绍
 
+## 1.日志系统
+
+> # 一、日志系统的核心设计思想
+>
+> 经典日志系统（比如 spdlog / log4cpp）都遵循一个通用架构：
+>
+> ### 1️⃣ 三大核心组件（必须有）
+>
+> > 这点非常重要，面试也会问
+>
+> - **Logger（日志器）**
+>   - 对外接口（你调用的 log.info()）
+> - **Appender / Sink（输出目标）**
+>   - 文件 / 控制台 / 网络
+> - **Formatter（格式器）**
+>   - 控制输出格式（时间、线程ID等）
+>
+> 👉 类似 log4cpp 的设计就是：
+>
+> > Category + Appender + Layout 
+>
+> ------
+>
+> # 二、最小可用日志系统实现
+>
+> ## 1️⃣ 日志级别设计
+>
+> ```c++
+> enum class LogLevel {
+>     TRACE,
+>     DEBUG,
+>     INFO,
+>     WARN,
+>     ERROR
+> };
+> ```
+>
+> ------
+>
+> ## 2️⃣ 日志消息结构
+>
+> ```c++
+> struct LogMessage {
+>     LogLevel level;
+>     std::string message;
+>     std::string file;
+>     int line;
+>     std::thread::id tid;
+>     std::time_t timestamp;
+> };
+> ```
+>
+> ------
+>
+> ## 3️⃣ Formatter（格式化）
+>
+> ```c++
+> class Formatter {
+> public:
+>     static std::string format(const LogMessage& msg) {
+>         std::stringstream ss;
+> 
+>         ss << "[" << msg.timestamp << "]"
+>            << "[TID:" << msg.tid << "]"
+>            << "[" << levelToString(msg.level) << "] "
+>            << msg.message;
+> 
+>         return ss.str();
+>     }
+> 
+> private:
+>     static std::string levelToString(LogLevel level) {
+>         switch(level) {
+>             case LogLevel::DEBUG: return "DEBUG";
+>             case LogLevel::INFO:  return "INFO";
+>             case LogLevel::WARN:  return "WARN";
+>             case LogLevel::ERROR: return "ERROR";
+>             default: return "UNKNOWN";
+>         }
+>     }
+> };
+> ```
+>
+> ------
+>
+> ## 4️⃣ Sink（输出模块）
+>
+> ### 控制台
+>
+> ```c++
+> class ConsoleSink {
+> public:
+>     void log(const std::string& msg) {
+>         std::cout << msg << std::endl;
+>     }
+> };
+> ```
+>
+> ### 文件
+>
+> ```c++
+> class FileSink {
+> private:
+>     std::ofstream file;
+> 
+> public:
+>     FileSink(const std::string& filename) {
+>         file.open(filename, std::ios::app);
+>     }
+> 
+>     void log(const std::string& msg) {
+>         file << msg << std::endl;
+>     }
+> };
+> ```
+>
+> ------
+>
+> ## 5️⃣ Logger（核心）
+>
+> ```c++
+> class Logger {
+> private:
+>     std::vector<std::function<void(const std::string&)>> sinks;
+>     LogLevel level = LogLevel::DEBUG;
+> 
+> public:
+>     void addSink(std::function<void(const std::string&)> sink) {
+>         sinks.push_back(sink);
+>     }
+> 
+>     void setLevel(LogLevel lvl) {
+>         level = lvl;
+>     }
+> 
+>     void log(LogLevel lvl, const std::string& msg,
+>              const char* file, int line) {
+> 
+>         if (lvl < level) return;
+> 
+>         LogMessage logMsg{
+>             lvl, msg, file, line,
+>             std::this_thread::get_id(),
+>             std::time(nullptr)
+>         };
+> 
+>         auto formatted = Formatter::format(logMsg);
+> 
+>         for (auto& sink : sinks) {
+>             sink(formatted);
+>         }
+>     }
+> };
+> ```
+>
+> ------
+>
+> ## 6️⃣ 宏封装（必须）
+>
+> ```c++
+> #define LOG_INFO(logger, msg) \
+>     logger.log(LogLevel::INFO, msg, __FILE__, __LINE__)
+> ```
+>
+> ------
+>
+> ## 7️⃣ 使用
+>
+> ```c++
+> Logger logger;
+> 
+> ConsoleSink console;
+> FileSink file("app.log");
+> 
+> logger.addSink([&](const std::string& msg){ console.log(msg); });
+> logger.addSink([&](const std::string& msg){ file.log(msg); });
+> 
+> LOG_INFO(logger, "Hello Logger!");
+> ```
+>
+> ------
+>
+> # 三、进阶
+>
+> ## 1️⃣ 异步日志（重点🔥）
+>
+> 为什么必须？
+>
+> 👉 同步写日志 = 性能杀手
+>
+> ### 设计：
+>
+> ```
+> 业务线程 → 队列 → 日志线程 → 写文件
+> ```
+>
+> 实现：
+>
+> ```c++
+> std::queue<LogMessage> queue;
+> std::mutex mtx;
+> std::condition_variable cv;
+> ```
+>
+> 👉 spdlog 就支持异步模式 
+>
+> ------
+>
+> ## 2️⃣ 无锁 / 低锁优化
+>
+> - ring buffer
+> - lock-free queue
+>
+> ------
+>
+> ## 3️⃣ 日志切割（log rotate）
+>
+> ```c++
+> app.log
+> app.log.1
+> app.log.2
+> ```
+>
+> 触发方式：
+>
+> - 按大小
+> - 按时间
+>
+> ------
+>
+> ## 4️⃣ 动态日志级别
+>
+> 运行时修改：
+>
+> ```c++
+> logger.setLevel(LogLevel::ERROR);
+> ```
+>
+> ------
+>
+> ## 5️⃣ 多模块日志（类似 log4j）
+>
+> ```c++
+> Logger dbLogger("DB");
+> Logger netLogger("NET");
+> ```
+>
+> ------
+>
+> ## 6️⃣ 格式增强
+>
+> ```c++
+> [2026-04-08 12:00:00][INFO][thread=12][file.cpp:33] msg
+> ```
+>
+> 
+>
+> ------
+>
+> # 五、面试总结
+>
+> 如果面试官问：
+>
+> 👉 **“你如何设计日志系统？”**
+>
+> 你要答：
+>
+> 1. 抽象 Logger / Sink / Formatter
+> 2. 支持多级别日志
+> 3. 支持多输出目标
+> 4. 异步化（队列 + 后台线程）
+> 5. 日志切割
+> 6. 动态配置
+> 7. 高性能（减少锁/避免IO阻塞）
+
 # 三.C++ 语法
 
 ## 1.内存模型与内存管理
