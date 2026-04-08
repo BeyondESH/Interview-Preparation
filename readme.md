@@ -3090,7 +3090,7 @@
 >
 >   Bash
 >
->   ```c++
+>   ```bash
 >   # 1. 仓库初始化与配置
 >   git init                  # 在当前目录生成隐藏的 .git 文件夹，正式接管代码
 >   git config user.name "Geek" 
